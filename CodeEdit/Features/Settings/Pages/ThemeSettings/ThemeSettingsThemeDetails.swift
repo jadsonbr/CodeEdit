@@ -20,6 +20,14 @@ struct ThemeSettingsThemeDetails: View {
 
     @StateObject private var themeModel: ThemeModel = .shared
 
+    @State private var duplicatingTheme: Theme?
+
+    @State private var deleteConfirmationIsPresented = false
+
+    var isActive: Bool {
+        themeModel.getThemeActive(theme)
+    }
+
     init(theme: Binding<Theme>) {
         _theme = theme
         originalTheme = theme.wrappedValue
@@ -71,52 +79,72 @@ struct ThemeSettingsThemeDetails: View {
                         VStack(spacing: 0) {
                             ThemeSettingsThemeToken(
                                 "Keywords",
-                                color: $theme.editor.keywords.swiftColor
+                                color: $theme.editor.keywords.swiftColor,
+                                bold: $theme.editor.keywords.bold,
+                                italic: $theme.editor.keywords.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Commands",
-                                color: $theme.editor.commands.swiftColor
+                                color: $theme.editor.commands.swiftColor,
+                                bold: $theme.editor.commands.bold,
+                                italic: $theme.editor.commands.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Types",
-                                color: $theme.editor.types.swiftColor
+                                color: $theme.editor.types.swiftColor,
+                                bold: $theme.editor.types.bold,
+                                italic: $theme.editor.types.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Attributes",
-                                color: $theme.editor.attributes.swiftColor
+                                color: $theme.editor.attributes.swiftColor,
+                                bold: $theme.editor.attributes.bold,
+                                italic: $theme.editor.attributes.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Variables",
-                                color: $theme.editor.variables.swiftColor
+                                color: $theme.editor.variables.swiftColor,
+                                bold: $theme.editor.variables.bold,
+                                italic: $theme.editor.variables.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Values",
-                                color: $theme.editor.values.swiftColor
+                                color: $theme.editor.values.swiftColor,
+                                bold: $theme.editor.values.bold,
+                                italic: $theme.editor.values.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Numbers",
-                                color: $theme.editor.numbers.swiftColor
+                                color: $theme.editor.numbers.swiftColor,
+                                bold: $theme.editor.numbers.bold,
+                                italic: $theme.editor.numbers.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Strings",
-                                color: $theme.editor.strings.swiftColor
+                                color: $theme.editor.strings.swiftColor,
+                                bold: $theme.editor.strings.bold,
+                                italic: $theme.editor.strings.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Characters",
-                                color: $theme.editor.characters.swiftColor
+                                color: $theme.editor.characters.swiftColor,
+                                bold: $theme.editor.characters.bold,
+                                italic: $theme.editor.characters.italic
                             )
                             Divider().padding(.horizontal, 10)
                             ThemeSettingsThemeToken(
                                 "Comments",
-                                color: $theme.editor.comments.swiftColor
+                                color: $theme.editor.comments.swiftColor,
+                                bold: $theme.editor.comments.bold,
+                                italic: $theme.editor.comments.italic
                             )
                         }
                         .background(theme.editor.background.swiftColor)
@@ -148,19 +176,19 @@ struct ThemeSettingsThemeDetails: View {
                     .accessibilityLabel("Warning: Duplicate this theme to make changes.")
                 } else if !themeModel.isAdding {
                     Button(role: .destructive) {
-                        themeModel.delete(theme)
-                        dismiss()
+                        deleteConfirmationIsPresented = true
                     } label: {
-                        Text("Delete")
+                        Text("Delete...")
                             .foregroundStyle(.red)
                             .frame(minWidth: 56)
                     }
                     Button {
                         if let fileURL = theme.fileURL {
+                            duplicatingTheme = theme
                             themeModel.duplicate(fileURL)
                         }
                     } label: {
-                        Text("Duplicate")
+                        Text("Duplicate...")
                             .frame(minWidth: 56)
                     }
                 }
@@ -168,6 +196,7 @@ struct ThemeSettingsThemeDetails: View {
                 if !themeModel.isAdding && theme.isBundled {
                     Button {
                         if let fileURL = theme.fileURL {
+                            duplicatingTheme = theme
                             themeModel.duplicate(fileURL)
                         }
                     } label: {
@@ -177,12 +206,28 @@ struct ThemeSettingsThemeDetails: View {
                 } else {
                     Button {
                         if themeModel.isAdding {
-                            themeModel.delete(theme)
+                            if let previousTheme = themeModel.previousTheme {
+                                themeModel.activateTheme(previousTheme)
+                            }
+                            if let duplicatingWithinDetails = duplicatingTheme {
+                                let duplicateTheme = theme
+                                themeModel.detailsTheme = duplicatingWithinDetails
+                                themeModel.delete(duplicateTheme)
+                            } else {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                    themeModel.delete(theme)
+                                }
+                            }
                         } else {
                             themeModel.cancelDetails(theme)
                         }
 
-                        dismiss()
+                        if duplicatingTheme == nil {
+                            dismiss()
+                        } else {
+                            duplicatingTheme = nil
+                            themeModel.isAdding = false
+                        }
                     } label: {
                         Text("Cancel")
                             .frame(minWidth: 56)
@@ -203,5 +248,19 @@ struct ThemeSettingsThemeDetails: View {
             .padding()
         }
         .constrainHeightToWindow()
+        .alert(
+            Text("Are you sure you want to delete the theme “\(theme.displayName)”?"),
+            isPresented: $deleteConfirmationIsPresented
+        ) {
+            Button("Delete Theme") {
+                themeModel.delete(theme)
+                dismiss()
+            }
+            Button("Cancel") {
+                deleteConfirmationIsPresented = false
+            }
+        } message: {
+            Text("This action cannot be undone.")
+        }
     }
 }

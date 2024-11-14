@@ -8,12 +8,16 @@
 import SwiftUI
 import CodeEditSymbols
 import CodeEditSourceEditor
+import OSLog
 
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "", category: "AppDelegate")
     private let updater = SoftwareUpdater()
 
     @Environment(\.openWindow)
     var openWindow
+
+    @LazyService var lspService: LSPService
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupServiceContainer()
@@ -65,12 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if flag {
+        guard flag else {
+            handleOpen()
             return false
         }
 
-        handleOpen()
-
+        /// Check if all windows are either miniaturized or not visible.
+        /// If so, attempt to find the first miniaturized window and deminiaturize it.
+        guard sender.windows.allSatisfy({ $0.isMiniaturized || !$0.isVisible }) else { return false }
+        sender.windows.first(where: { $0.isMiniaturized })?.deminiaturize(sender)
         return false
     }
 
@@ -115,6 +122,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
 
+    /// Defers the application terminate message until we've finished cleanup.
+    ///
+    /// All paths _must_ call `NSApplication.shared.reply(toApplicationShouldTerminate: true)` as soon as possible.
+    ///
+    /// The two things needing deferring are:
+    /// - Language server cancellation
+    /// - Outstanding document changes.
+    ///
+    /// Things that don't need deferring (happen immediately):
+    /// - Task termination.
+    /// These are called immediately if no documents need closing, and are called by
+    /// ``documentController(_:didCloseAll:contextInfo:)`` if there are documents we need to defer for.
+    ///
+    /// See ``terminateLanguageServers()`` and ``documentController(_:didCloseAll:contextInfo:)`` for deferring tasks.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let projects: [String] = CodeEditDocumentController.shared.documents
             .compactMap { ($0 as? WorkspaceDocument)?.fileURL?.path }
@@ -128,10 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 didCloseAllSelector: #selector(documentController(_:didCloseAll:contextInfo:)),
                 contextInfo: nil
             )
+            // `documentController(_:didCloseAll:contextInfo:)` will call `terminateLanguageServers()`
             return .terminateLater
         }
 
-        return .terminateNow
+        terminateTasks()
+        terminateLanguageServers()
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -224,15 +248,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     @objc
     func documentController(_ docController: NSDocumentController, didCloseAll: Bool, contextInfo: Any) {
-        NSApplication.shared.reply(toApplicationShouldTerminate: didCloseAll)
+        if didCloseAll {
+            terminateTasks()
+            terminateLanguageServers()
+        }
     }
-}
 
-/// Setup all the services into a ServiceContainer for the application to use.
-private func setupServiceContainer() {
-    ServiceContainer.register(
-        LSPService()
-    )
+    /// Terminates running language servers. Used during app termination to ensure resources are freed.
+    private func terminateLanguageServers() {
+        Task {
+            await lspService.stopAllServers()
+            await MainActor.run {
+                NSApplication.shared.reply(toApplicationShouldTerminate: true)
+            }
+        }
+    }
+
+    /// Terminates all running tasks. Used during app termination to ensure resources are freed.
+    private func terminateTasks() {
+        let documents = CodeEditDocumentController.shared.documents.compactMap({ $0 as? WorkspaceDocument })
+        documents.forEach { workspace in
+            workspace.taskManager?.stopAllTasks()
+        }
+    }
+
+    /// Setup all the services into a ServiceContainer for the application to use.
+    @MainActor
+    private func setupServiceContainer() {
+        ServiceContainer.register(
+            LSPService()
+        )
+    }
 }
 
 extension AppDelegate {

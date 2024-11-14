@@ -56,7 +56,10 @@ struct CodeFileView: View {
 
     init(codeFile: CodeFileDocument, textViewCoordinators: [TextViewCoordinator] = [], isEditable: Bool = true) {
         self._codeFile = .init(wrappedValue: codeFile)
-        self.textViewCoordinators = textViewCoordinators + [codeFile.contentCoordinator]
+        self.textViewCoordinators = textViewCoordinators + [
+            codeFile.contentCoordinator,
+            codeFile.languageServerCoordinator
+        ]
         self.isEditable = isEditable
 
         if let openOptions = codeFile.openOptions {
@@ -77,11 +80,10 @@ struct CodeFileView: View {
             .textUpdatePublisher
             .debounce(for: 1.0, scheduler: DispatchQueue.main)
             .sink { _ in
+                // updateChangeCount is automatically managed by autosave(), so no manual call is necessary
                 codeFile.autosave(withImplicitCancellability: false) { error in
                     if let error {
                         CodeFileDocument.logger.error("Failed to autosave document, error: \(error)")
-                    } else {
-                        codeFile.updateChangeCount(.changeCleared)
                     }
                 }
             }
@@ -119,7 +121,7 @@ struct CodeFileView: View {
     var body: some View {
         CodeEditSourceEditor(
             codeFile.content ?? NSTextStorage(),
-            language: getLanguage(),
+            language: codeFile.getLanguage(),
             theme: currentTheme.editor.editorTheme,
             font: font,
             tabWidth: codeFile.defaultTabWidth ?? defaultTabWidth,
@@ -154,17 +156,6 @@ struct CodeFileView: View {
         .onChange(of: bracketHighlight) { _ in
             bracketPairHighlight = getBracketPairHighlight()
         }
-    }
-
-    private func getLanguage() -> CodeLanguage {
-        guard let url = codeFile.fileURL else {
-            return .default
-        }
-        return codeFile.language ?? CodeLanguage.detectLanguageFrom(
-            url: url,
-            prefixBuffer: codeFile.content?.string.getFirstLines(5),
-            suffixBuffer: codeFile.content?.string.getLastLines(5)
-        )
     }
 
     private func getBracketPairHighlight() -> BracketPairHighlight? {

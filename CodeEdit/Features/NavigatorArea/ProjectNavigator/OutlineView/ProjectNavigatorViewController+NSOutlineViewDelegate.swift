@@ -24,13 +24,22 @@ extension ProjectNavigatorViewController: NSOutlineViewDelegate {
         guard let tableColumn else { return nil }
 
         let frameRect = NSRect(x: 0, y: 0, width: tableColumn.width, height: rowHeight)
-
-        return ProjectNavigatorTableViewCell(frame: frameRect, item: item as? CEWorkspaceFile, delegate: self)
+        let cell = ProjectNavigatorTableViewCell(
+            frame: frameRect,
+            item: item as? CEWorkspaceFile,
+            delegate: self,
+            navigatorFilter: workspace?.navigatorFilter
+        )
+        return cell
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard let outlineView = notification.object as? NSOutlineView else { return }
 
+        /// If multiple rows are selected, do not open any file.
+        guard outlineView.selectedRowIndexes.count == 1 else { return }
+
+        /// If only one row is selected, proceed as before
         let selectedIndex = outlineView.selectedRow
 
         guard let item = outlineView.item(atRow: selectedIndex) as? CEWorkspaceFile else { return }
@@ -38,7 +47,9 @@ extension ProjectNavigatorViewController: NSOutlineViewDelegate {
         if !item.isFolder && shouldSendSelectionUpdate {
             DispatchQueue.main.async { [weak self] in
                 self?.shouldSendSelectionUpdate = false
-                self?.workspace?.editorManager?.activeEditor.openTab(file: item, asTemporary: true)
+                if self?.workspace?.editorManager?.activeEditor.selectedTab?.file != item {
+                    self?.workspace?.editorManager?.activeEditor.openTab(file: item, asTemporary: true)
+                }
                 self?.shouldSendSelectionUpdate = true
             }
         }
@@ -49,8 +60,14 @@ extension ProjectNavigatorViewController: NSOutlineViewDelegate {
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard let id = workspace?.editorManager?.activeEditor.selectedTab?.file.id,
-              let item = workspace?.workspaceFileManager?.getFile(id, createIfNotFound: true),
+        /// Save expanded items' state to restore when finish filtering.
+        guard let workspace else { return }
+        if workspace.navigatorFilter.isEmpty, let item = notification.userInfo?["NSObject"] as? CEWorkspaceFile {
+            expandedItems.insert(item)
+        }
+
+        guard let id = workspace.editorManager?.activeEditor.selectedTab?.file.id,
+              let item = workspace.workspaceFileManager?.getFile(id, createIfNotFound: true),
               /// update outline selection only if the parent of selected item match with expanded item
               item.parent === notification.userInfo?["NSObject"] as? CEWorkspaceFile else {
             return
@@ -61,7 +78,13 @@ extension ProjectNavigatorViewController: NSOutlineViewDelegate {
         }
     }
 
-    func outlineViewItemDidCollapse(_ notification: Notification) {}
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        /// Save expanded items' state to restore when finish filtering.
+        guard let workspace else { return }
+        if workspace.navigatorFilter.isEmpty, let item = notification.userInfo?["NSObject"] as? CEWorkspaceFile {
+            expandedItems.remove(item)
+        }
+    }
 
     func outlineView(_ outlineView: NSOutlineView, itemForPersistentObject object: Any) -> Any? {
         guard let id = object as? CEWorkspaceFile.ID,
