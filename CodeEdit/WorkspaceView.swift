@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct WorkspaceView: View {
     @Environment(\.window.value)
@@ -18,6 +19,9 @@ struct WorkspaceView: View {
 
     @AppSettings(\.theme.matchAppearance)
     var matchAppearance
+
+    @AppSettings(\.sourceControl.general.sourceControlIsEnabled)
+    var sourceControlIsEnabled
 
     @EnvironmentObject private var workspace: WorkspaceDocument
     @EnvironmentObject private var editorManager: EditorManager
@@ -79,6 +83,7 @@ struct WorkspaceView: View {
                                         }
                                 }
                             }
+                            .accessibilityHidden(true)
                     }
                     .edgesIgnoringSafeArea(.top)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,6 +102,10 @@ struct WorkspaceView: View {
                             }
                             .offset(y: utilityAreaViewModel.isMaximized ? 0 : editorsHeight - statusbarHeight)
                         }
+                        .accessibilityElement(children: .contain)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        NotificationPanelView()
                     }
                     .onChange(of: focusedEditor) { newValue in
                         /// update active tab group only if the new one is not the same with it.
@@ -130,6 +139,15 @@ struct WorkspaceView: View {
                             : themeModel.selectedLightTheme
                         }
                     }
+                    .onChange(of: sourceControlIsEnabled) { newValue in
+                        if newValue {
+                            Task {
+                                await sourceControlManager.refreshCurrentBranch()
+                            }
+                        } else {
+                            sourceControlManager.currentBranch = nil
+                        }
+                    }
                     .onChange(of: focusedEditor) { newValue in
                         /// Update active tab group only if the new one is not the same with it.
                         if let newValue, editorManager.activeEditor != newValue {
@@ -153,8 +171,29 @@ struct WorkspaceView: View {
             }
             .background(EffectView(.contentBackground))
             .background(WorkspaceSheets().environmentObject(sourceControlManager))
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                _ = handleDrop(providers: providers)
+                return true
+            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("workspace area")
         }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        for provider in providers {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else {
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    let file = CEWorkspaceFile(url: url)
+                    editorManager.activeEditor.openTab(file: file)
+                }
+            }
+        }
+        return true
     }
 }

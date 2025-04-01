@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import SwiftUI
 
 extension ProjectNavigatorMenu {
     /// - Returns: the currently selected `CEWorkspaceFile` items in the outline view.
@@ -86,14 +87,15 @@ extension ProjectNavigatorMenu {
     func newFile() {
         guard let item else { return }
         do {
-            try workspace?.workspaceFileManager?.addFile(fileName: "untitled", toFile: item)
+            if let newFile = try workspace?.workspaceFileManager?.addFile(fileName: "untitled", toFile: item) {
+                workspace?.listenerModel.highlightedFileItem = newFile
+                workspace?.editorManager?.openTab(item: newFile)
+            }
         } catch {
             let alert = NSAlert(error: error)
             alert.addButton(withTitle: "Dismiss")
             alert.runModal()
         }
-        reloadData()
-        sender.outlineView.expandItem(item.isFolder ? item : item.parent)
     }
 
     // TODO: allow custom folder names
@@ -101,10 +103,15 @@ extension ProjectNavigatorMenu {
     @objc
     func newFolder() {
         guard let item else { return }
-        workspace?.workspaceFileManager?.addFolder(folderName: "untitled", toFile: item)
-        reloadData()
-        sender.outlineView.expandItem(item)
-        sender.outlineView.expandItem(item.isFolder ? item : item.parent)
+        do {
+            if let newFolder = try workspace?.workspaceFileManager?.addFolder(folderName: "untitled", toFile: item) {
+                workspace?.listenerModel.highlightedFileItem = newFolder
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.addButton(withTitle: "Dismiss")
+            alert.runModal()
+        }
     }
 
     /// Creates a new folder with the items selected.
@@ -120,11 +127,17 @@ extension ProjectNavigatorMenu {
         var folderNumber = 0
         while workspaceFileManager.fileManager.fileExists(atPath: newFolderURL.path) {
             folderNumber += 1
-            newFolderURL = parent.url.appendingPathComponent("New Folder With Items \(folderNumber)")
+            newFolderURL = parent.url.appending(path: "New Folder With Items \(folderNumber)")
         }
 
-        for selectedItem in selectedItems where selectedItem.url != newFolderURL {
-            workspaceFileManager.move(file: selectedItem, to: newFolderURL.appending(path: selectedItem.name))
+        do {
+            for selectedItem in selectedItems where selectedItem.url != newFolderURL {
+                try workspaceFileManager.move(file: selectedItem, to: newFolderURL.appending(path: selectedItem.name))
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.addButton(withTitle: "Dismiss")
+            alert.runModal()
         }
 
         reloadData()
@@ -148,33 +161,65 @@ extension ProjectNavigatorMenu {
     /// Action that moves the item to trash.
     @objc
     func trash() {
-        selectedItems().forEach { item in
-            workspace?.workspaceFileManager?.trash(file: item)
+        do {
+            try selectedItems().forEach { item in
+                withAnimation {
+                    sender.editor?.closeTab(file: item)
+                }
+                guard FileManager.default.fileExists(atPath: item.url.path) else {
+                    // Was likely already trashed (eg selecting files in a folder and deleting the folder and files)
+                    return
+                }
+                try workspace?.workspaceFileManager?.trash(file: item)
+            }
+            reloadData()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.addButton(withTitle: "Dismiss")
+            alert.runModal()
         }
-        reloadData()
     }
 
     /// Action that deletes the item immediately.
     @objc
     func delete() {
-        let selectedItems = selectedItems()
-        if selectedItems.count == 1 {
-            selectedItems.forEach { item in
-                workspace?.workspaceFileManager?.delete(file: item)
+        do {
+            let selectedItems = selectedItems()
+            if selectedItems.count == 1 {
+                try selectedItems.forEach { item in
+                    try workspace?.workspaceFileManager?.delete(file: item)
+                }
+            } else {
+                try workspace?.workspaceFileManager?.batchDelete(files: selectedItems)
             }
-        } else {
-            workspace?.workspaceFileManager?.batchDelete(files: selectedItems)
+
+            withAnimation {
+                selectedItems.forEach { item in
+                    sender.editor?.closeTab(file: item)
+                }
+            }
+
+            reloadData()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.addButton(withTitle: "Dismiss")
+            alert.runModal()
         }
-        reloadData()
     }
 
     /// Action that duplicates the item
     @objc
     func duplicate() {
-        selectedItems().forEach { item in
-            workspace?.workspaceFileManager?.duplicate(file: item)
+        do {
+            try selectedItems().forEach { item in
+                try workspace?.workspaceFileManager?.duplicate(file: item)
+            }
+            reloadData()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.addButton(withTitle: "Dismiss")
+            alert.runModal()
         }
-        reloadData()
     }
 
     private func reloadData() {
