@@ -15,7 +15,7 @@ struct SplitViewControllerView: NSViewControllerRepresentable {
     @Binding var viewController: () -> SplitViewController?
 
     func makeNSViewController(context: Context) -> SplitViewController {
-        let controller = SplitViewController(axis: axis) { controller in
+        let controller = SplitViewController(axis: axis, parentView: self) { controller in
             updateItems(controller: controller)
         }
         return controller
@@ -64,10 +64,6 @@ struct SplitViewControllerView: NSViewControllerRepresentable {
             }
         }
     }
-
-    func makeCoordinator() -> SplitViewController {
-        SplitViewController(axis: axis, setUpItems: nil)
-    }
 }
 
 final class SplitViewController: NSSplitViewController {
@@ -100,6 +96,16 @@ final class SplitViewController: NSSplitViewController {
         override var dividerThickness: CGFloat {
             customDividerStyle.customThickness ?? super.dividerThickness
         }
+
+        override func drawDivider(in rect: NSRect) {
+            let safeRect = NSRect(
+                x: rect.origin.x,
+                y: max(rect.origin.y, safeAreaRect.origin.y),
+                width: isVertical ? dividerThickness : rect.width,
+                height: isVertical ? safeAreaRect.height : dividerThickness
+            )
+            super.drawDivider(in: safeRect)
+        }
     }
 
     var items: [SplitViewItem] = []
@@ -108,8 +114,9 @@ final class SplitViewController: NSSplitViewController {
 
     var setUpItems: ((SplitViewController) -> Void)?
 
-    init(axis: Axis, setUpItems: ((SplitViewController) -> Void)?) {
+    init(axis: Axis, parentView: SplitViewControllerView?, setUpItems: ((SplitViewController) -> Void)?) {
         self.axis = axis
+        self.parentView = parentView
         self.setUpItems = setUpItems
         super.init(nibName: nil, bundle: nil)
     }
@@ -132,10 +139,6 @@ final class SplitViewController: NSSplitViewController {
                 self
             }
         }
-    }
-
-    override func splitView(_ splitView: NSSplitView, canCollapseSubview subview: NSView) -> Bool {
-        false
     }
 
     override func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {

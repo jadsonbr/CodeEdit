@@ -25,15 +25,20 @@ struct EditorAreaView: View {
 
     @EnvironmentObject private var editorManager: EditorManager
 
-    @State var codeFile: CodeFileDocument?
+    @State var codeFile: (() -> CodeFileDocument?)?
 
     @Environment(\.window.value)
     private var window: NSWindow?
 
+    @Environment(\.isEditorLayoutAtEdge)
+    private var isAtEdge
+
     init(editor: Editor, focus: FocusState<Editor?>.Binding) {
         self.editor = editor
         self._focus = focus
-        self.codeFile = editor.selectedTab?.file.fileDocument
+        if let file = editor.selectedTab?.file.fileDocument {
+            self.codeFile = { [weak file] in file }
+        }
     }
 
     var body: some View {
@@ -53,32 +58,28 @@ struct EditorAreaView: View {
 
         VStack {
             if let selected = editor.selectedTab {
-                if let codeFile = codeFile {
-                    EditorAreaFileView(
-                        codeFile: codeFile,
-                        textViewCoordinators: [selected.rangeTranslator].compactMap({ $0 })
-                    )
-                    .focusedObject(editor)
-                    .transformEnvironment(\.edgeInsets) { insets in
-                        insets.top += editorInsetAmount
-                    }
-                    .opacity(dimEditorsWithoutFocus && editor != editorManager.activeEditor ? 0.5 : 1)
-                    .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                        _ = handleDrop(providers: providers)
-                        return true
-                    }
+                if let codeFile = codeFile?() {
+                    EditorAreaFileView(editorInstance: selected, codeFile: codeFile)
+                        .focusedObject(editor)
+                        .transformEnvironment(\.edgeInsets) { insets in
+                            insets.top += editorInsetAmount
+                        }
+                        .opacity(dimEditorsWithoutFocus && editor != editorManager.activeEditor ? 0.5 : 1)
+                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                            _ = handleDrop(providers: providers)
+                            return true
+                        }
                 } else {
                     LoadingFileView(selected.file.name)
                         .onAppear {
                             if let file = selected.file.fileDocument {
-                                self.codeFile = file
+                                self.codeFile = { [weak file] in file }
                             }
                         }
                         .onReceive(selected.file.fileDocumentPublisher) { latestValue in
-                            self.codeFile = latestValue
+                            self.codeFile = { [weak latestValue] in latestValue }
                         }
                 }
-
             } else {
                 CEContentUnavailableView("No Editor")
                     .padding(.top, editorInsetAmount)
@@ -96,7 +97,17 @@ struct EditorAreaView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             GeometryReader { geometry in
                 let topSafeArea = geometry.safeAreaInsets.top
+                let fileBinding = Binding {
+                    codeFile?()
+                } set: { newFile in
+                    codeFile = { [weak newFile] in newFile }
+                }
+
                 VStack(spacing: 0) {
+                    if isAtEdge != .top, #available(macOS 26, *) {
+                        Spacer().frame(height: 4)
+                    }
+
                     if topSafeArea > 0 {
                         Rectangle()
                             .fill(.clear)
@@ -104,16 +115,18 @@ struct EditorAreaView: View {
                             .background(.clear)
                     }
                     if shouldShowTabBar {
-                        EditorTabBarView(hasTopInsets: topSafeArea > 0, codeFile: $codeFile)
+                        EditorTabBarView(hasTopInsets: topSafeArea > 0, codeFile: fileBinding)
                             .id("TabBarView" + editor.id.uuidString)
                             .environmentObject(editor)
-                        Divider()
+                        if #unavailable(macOS 26) {
+                            Divider()
+                        }
                     }
                     if showEditorJumpBar {
                         EditorJumpBarView(
                             file: editor.selectedTab?.file,
                             shouldShowTabBar: shouldShowTabBar,
-                            codeFile: $codeFile
+                            codeFile: fileBinding
                         ) { [weak editor] newFile in
                             if let file = editor?.selectedTab, let index = editor?.tabs.firstIndex(of: file) {
                                 editor?.openTab(file: newFile, at: index)
@@ -121,11 +134,51 @@ struct EditorAreaView: View {
                         }
                         .environmentObject(editor)
                         .padding(.top, shouldShowTabBar ? -1 : 0)
+                        if #unavailable(macOS 26) {
+                            Divider()
+                        }
+                    }
+                    // On Tahoe we only show one divider
+                    if #available(macOS 26, *), shouldShowTabBar || showEditorJumpBar {
                         Divider()
                     }
                 }
                 .environment(\.isActiveEditor, editor == editorManager.activeEditor)
-                .background(EffectView(.headerView))
+                .if(.tahoe) {
+                    // FB20047271: Glass toolbar effect ignores floating scroll view views.
+                    // https://openradar.appspot.com/radar?id=EhAKBVJhZGFyEICAgKbGmesJ
+
+                    // FB20191516: Can't disable backgrounded liquid glass tint
+                    // https://openradar.appspot.com/radar?id=EhAKBVJhZGFyEICAgLqTk-4J
+                    // Tracking Issue: #2191
+                    // Add this to the top:
+                    // ```
+                    // @AppSettings(\.theme.useThemeBackground)
+                    // var useThemeBackground
+                    //
+                    // private var backgroundColor: NSColor {
+                    //     let fallback = NSColor.textBackgroundColor
+                    //     return if useThemeBackground {
+                    //         ThemeModel.shared.selectedTheme?.editor.background.nsColor ?? fallback
+                    //     } else {
+                    //         fallback
+                    //     }
+                    // }
+                    // ```
+                    // And use this:
+                    // ```
+                    // $0.background(
+                    //    Rectangle().fill(.clear)
+                    //        .glassEffect(.regular.tint(Color(backgroundColor))
+                    //        .ignoresSafeArea(.all)
+                    // )
+                    // ```
+                    // When we can figure out how to disable the 'not focused' glass effect.
+
+                    $0.background(EffectView(.headerView).ignoresSafeArea(.all))
+                } else: {
+                    $0.background(EffectView(.headerView))
+                }
             }
         }
         .focused($focus, equals: editor)
@@ -141,7 +194,9 @@ struct EditorAreaView: View {
             }
         }
         .onChange(of: editor.selectedTab) { newValue in
-            codeFile = newValue?.file.fileDocument
+            if let file = newValue?.file.fileDocument {
+                codeFile = { [weak file] in file }
+            }
         }
     }
 
@@ -155,9 +210,8 @@ struct EditorAreaView: View {
 
                 DispatchQueue.main.async {
                     let file = CEWorkspaceFile(url: url)
-                    editor.openTab(file: file)
                     editorManager.activeEditor = editor
-                    focus = editor
+                    editor.openTab(file: file)
                 }
             }
         }

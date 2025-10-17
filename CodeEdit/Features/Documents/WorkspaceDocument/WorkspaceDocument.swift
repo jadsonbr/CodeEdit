@@ -45,11 +45,14 @@ final class WorkspaceDocument: NSDocument, ObservableObject, NSToolbarDelegate {
     var workspaceSettingsManager: CEWorkspaceSettings?
     var taskNotificationHandler: TaskNotificationHandler = TaskNotificationHandler()
 
-    @Published var notificationPanel = NotificationPanelViewModel()
+    var undoRegistration: UndoManagerRegistration = UndoManagerRegistration()
+
+    var notificationPanel = NotificationPanelViewModel()
     private var cancellables = Set<AnyCancellable>()
 
     override init() {
         super.init()
+        notificationPanel.workspace = self
 
         // Observe changes to notification panel
         notificationPanel.objectWillChange
@@ -161,7 +164,9 @@ final class WorkspaceDocument: NSDocument, ObservableObject, NSToolbarDelegate {
                 workspaceURL: url
             )
         }
+        self.taskNotificationHandler.workspaceURL = url
 
+        workspaceFileManager?.addObserver(undoRegistration)
         editorManager?.restoreFromState(self)
         utilityAreaModel?.restoreFromState(self)
     }

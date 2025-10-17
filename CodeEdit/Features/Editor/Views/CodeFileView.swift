@@ -14,17 +14,14 @@ import Combine
 
 /// CodeFileView is just a wrapper of the `CodeEditor` dependency
 struct CodeFileView: View {
+    @ObservedObject private var editorInstance: EditorInstance
     @ObservedObject private var codeFile: CodeFileDocument
-
-    /// The current cursor positions in the view
-    @State private var cursorPositions: [CursorPosition] = []
 
     @State private var treeSitterClient: TreeSitterClient = TreeSitterClient()
 
     /// Any coordinators passed to the view.
     private var textViewCoordinators: [TextViewCoordinator]
-
-    @State private var highlightProviders: [any HighlightProviding] = []
+    private var highlightProviders: [any HighlightProviding] = []
 
     @AppSettings(\.textEditing.defaultTabWidth)
     var defaultTabWidth
@@ -48,15 +45,25 @@ struct CodeFileView: View {
     var bracketEmphasis
     @AppSettings(\.textEditing.useSystemCursor)
     var useSystemCursor
+    @AppSettings(\.textEditing.showGutter)
+    var showGutter
     @AppSettings(\.textEditing.showMinimap)
     var showMinimap
+    @AppSettings(\.textEditing.showFoldingRibbon)
+    var showFoldingRibbon
     @AppSettings(\.textEditing.reformatAtColumn)
     var reformatAtColumn
     @AppSettings(\.textEditing.showReformattingGuide)
     var showReformattingGuide
+    @AppSettings(\.textEditing.invisibleCharacters)
+    var invisibleCharactersConfiguration
+    @AppSettings(\.textEditing.warningCharacters)
+    var warningCharacters
 
     @Environment(\.colorScheme)
     private var colorScheme
+
+    @EnvironmentObject var undoRegistration: UndoManagerRegistration
 
     @ObservedObject private var themeModel: ThemeModel = .shared
 
@@ -66,46 +73,35 @@ struct CodeFileView: View {
 
     private let isEditable: Bool
 
-    private let undoManager = CEUndoManager()
-
-    init(codeFile: CodeFileDocument, textViewCoordinators: [TextViewCoordinator] = [], isEditable: Bool = true) {
+    init(
+        editorInstance: EditorInstance,
+        codeFile: CodeFileDocument,
+        textViewCoordinators: [TextViewCoordinator] = [],
+        isEditable: Bool = true
+    ) {
+        self._editorInstance = .init(wrappedValue: editorInstance)
         self._codeFile = .init(wrappedValue: codeFile)
 
         self.textViewCoordinators = textViewCoordinators
+            + [editorInstance.rangeTranslator]
             + [codeFile.contentCoordinator]
-            + [codeFile.languageServerObjects.textCoordinator].compactMap({ $0 })
+            + [codeFile.languageServerObjects.textCoordinator]
         self.isEditable = isEditable
 
         if let openOptions = codeFile.openOptions {
             codeFile.openOptions = nil
-            self.cursorPositions = openOptions.cursorPositions
+            editorInstance.cursorPositions = openOptions.cursorPositions
         }
 
-        updateHighlightProviders()
+        highlightProviders = [codeFile.languageServerObjects.highlightProvider] + [treeSitterClient]
 
         codeFile
             .contentCoordinator
             .textUpdatePublisher
-            .sink { _ in
-                codeFile.updateChangeCount(.changeDone)
+            .sink { [weak codeFile] _ in
+                codeFile?.updateChangeCount(.changeDone)
             }
             .store(in: &cancellables)
-
-        codeFile
-            .contentCoordinator
-            .textUpdatePublisher
-            .debounce(for: 1.0, scheduler: DispatchQueue.main)
-            .sink { _ in
-                // updateChangeCount is automatically managed by autosave(), so no manual call is necessary
-                codeFile.autosave(withImplicitCancellability: false) { error in
-                    if let error {
-                        CodeFileDocument.logger.error("Failed to autosave document, error: \(error)")
-                    }
-                }
-            }
-            .store(in: &cancellables)
-
-        codeFile.undoManager = self.undoManager.manager
     }
 
     private var currentTheme: Theme {
@@ -118,32 +114,64 @@ struct CodeFileView: View {
     private var edgeInsets
 
     var body: some View {
-        CodeEditSourceEditor(
+        SourceEditor(
             codeFile.content ?? NSTextStorage(),
             language: codeFile.getLanguage(),
-            theme: currentTheme.editor.editorTheme,
-            font: font,
-            tabWidth: codeFile.defaultTabWidth ?? defaultTabWidth,
-            indentOption: (codeFile.indentOption ?? indentOption).textViewOption(),
-            lineHeight: lineHeightMultiple,
-            wrapLines: codeFile.wrapLines ?? wrapLinesToEditorWidth,
-            editorOverscroll: overscroll.overscrollPercentage,
-            cursorPositions: $cursorPositions,
-            useThemeBackground: useThemeBackground,
+            configuration: SourceEditorConfiguration(
+                appearance: .init(
+                    theme: currentTheme.editor.editorTheme,
+                    useThemeBackground: useThemeBackground,
+                    font: font,
+                    lineHeightMultiple: lineHeightMultiple,
+                    letterSpacing: letterSpacing,
+                    wrapLines: wrapLinesToEditorWidth,
+                    useSystemCursor: useSystemCursor,
+                    tabWidth: defaultTabWidth,
+                    bracketPairEmphasis: getBracketPairEmphasis()
+                ),
+                behavior: .init(
+                    isEditable: isEditable,
+                    indentOption: indentOption.textViewOption(),
+                    reformatAtColumn: reformatAtColumn
+                ),
+                layout: .init(
+                    editorOverscroll: overscroll.overscrollPercentage,
+                    contentInsets: edgeInsets.nsEdgeInsets,
+                    additionalTextInsets: NSEdgeInsets(top: 2, left: 0, bottom: 0, right: 0)
+                ),
+                peripherals: .init(
+                    showGutter: showGutter,
+                    showMinimap: showMinimap,
+                    showReformattingGuide: showReformattingGuide,
+                    showFoldingRibbon: showFoldingRibbon,
+                    invisibleCharactersConfiguration: invisibleCharactersConfiguration.textViewOption(),
+                    warningCharacters: Set(warningCharacters.characters.keys)
+                )
+            ),
+            state: Binding(
+                get: {
+                    SourceEditorState(
+                        cursorPositions: editorInstance.cursorPositions,
+                        scrollPosition: editorInstance.scrollPosition,
+                        findText: editorInstance.findText,
+                        replaceText: editorInstance.replaceText
+                    )
+                },
+                set: { newState in
+                    editorInstance.cursorPositions = newState.cursorPositions ?? []
+                    editorInstance.scrollPosition = newState.scrollPosition
+                    editorInstance.findText = newState.findText
+                    editorInstance.findTextSubject.send(newState.findText)
+                    editorInstance.replaceText = newState.replaceText
+                    editorInstance.replaceTextSubject.send(newState.replaceText)
+                }
+            ),
             highlightProviders: highlightProviders,
-            contentInsets: edgeInsets.nsEdgeInsets,
-            additionalTextInsets: NSEdgeInsets(top: 2, left: 0, bottom: 0, right: 0),
-            isEditable: isEditable,
-            letterSpacing: letterSpacing,
-            bracketPairEmphasis: getBracketPairEmphasis(),
-            useSystemCursor: useSystemCursor,
-            undoManager: undoManager,
-            coordinators: textViewCoordinators,
-            showMinimap: showMinimap,
-            reformatAtColumn: reformatAtColumn,
-            showReformattingGuide: showReformattingGuide
+            undoManager: undoRegistration.manager(forFile: editorInstance.file),
+            coordinators: textViewCoordinators
         )
-        .id(codeFile.fileURL)
+        // This view needs to refresh when the codefile changes. The file URL is too stable.
+        .id(ObjectIdentifier(codeFile))
         .background {
             if colorScheme == .dark {
                 EffectView(.underPageBackground)
@@ -156,10 +184,6 @@ struct CodeFileView: View {
         .frame(minHeight: .zero, maxHeight: .infinity)
         .onChange(of: settingsFont) { newFontSetting in
             font = newFontSetting.current
-        }
-        .onReceive(codeFile.$languageServerObjects) { languageServerObjects in
-            // This will not be called in single-file views (for now) but is safe to listen to either way
-            updateHighlightProviders(lspHighlightProvider: languageServerObjects.highlightProvider)
         }
     }
 
@@ -183,12 +207,6 @@ struct CodeFileView: View {
             return .underline(color: color)
         }
     }
-
-    /// Updates the highlight providers array.
-    /// - Parameter lspHighlightProvider: The language server provider, if available.
-    private func updateHighlightProviders(lspHighlightProvider: HighlightProviding? = nil) {
-        highlightProviders = [lspHighlightProvider].compactMap({ $0 }) + [treeSitterClient]
-    }
 }
 
 // This extension is kept here because it should not be used elsewhere in the app and may cause confusion
@@ -201,5 +219,25 @@ private extension SettingsData.TextEditingSettings.IndentOption {
         case .tab:
             return IndentOption.tab
         }
+    }
+}
+
+private extension SettingsData.TextEditingSettings.InvisibleCharactersConfig {
+    func textViewOption() -> InvisibleCharactersConfiguration {
+        guard self.enabled else { return .empty }
+        var config = InvisibleCharactersConfiguration(
+            showSpaces: self.showSpaces,
+            showTabs: self.showTabs,
+            showLineEndings: self.showLineEndings
+        )
+
+        config.spaceReplacement = self.spaceReplacement
+        config.tabReplacement = self.tabReplacement
+        config.carriageReturnReplacement = self.carriageReturnReplacement
+        config.lineFeedReplacement = self.lineFeedReplacement
+        config.paragraphSeparatorReplacement = self.paragraphSeparatorReplacement
+        config.lineSeparatorReplacement = self.lineSeparatorReplacement
+
+        return config
     }
 }

@@ -36,24 +36,32 @@ class LanguageServer<DocumentType: LanguageServerDocument> {
     /// The configuration options this server supports.
     var serverCapabilities: ServerCapabilities
 
+    var logContainer: LanguageServerLogContainer
+
     /// An instance of a language server, that may or may not be initialized
     private(set) var lspInstance: InitializingServer
     /// The path to the root of the project
     private(set) var rootPath: URL
+    /// The PID of the running language server process.
+    private(set) var pid: pid_t
 
     init(
         languageId: LanguageIdentifier,
         binary: LanguageServerBinary,
         lspInstance: InitializingServer,
+        lspPid: pid_t,
         serverCapabilities: ServerCapabilities,
-        rootPath: URL
+        rootPath: URL,
+        logContainer: LanguageServerLogContainer
     ) {
         self.languageId = languageId
         self.binary = binary
         self.lspInstance = lspInstance
+        self.pid = lspPid
         self.serverCapabilities = serverCapabilities
         self.rootPath = rootPath
         self.openFiles = LanguageServerFileMap()
+        self.logContainer = logContainer
         self.logger = Logger(
             subsystem: Bundle.main.bundleIdentifier ?? "",
             category: "LanguageServer.\(languageId.rawValue)"
@@ -82,17 +90,26 @@ class LanguageServer<DocumentType: LanguageServerDocument> {
             environment: binary.env
         )
 
+        let logContainer = LanguageServerLogContainer(language: languageId)
+        let (connection, process) = try makeLocalServerConnection(
+            languageId: languageId,
+            executionParams: executionParams,
+            logContainer: logContainer
+        )
         let server = InitializingServer(
-            server: try makeLocalServerConnection(languageId: languageId, executionParams: executionParams),
+            server: connection,
             initializeParamsProvider: getInitParams(workspacePath: workspacePath)
         )
-        let capabilities = try await server.initializeIfNeeded()
+        let initializationResponse = try await server.initializeIfNeeded()
+
         return LanguageServer(
             languageId: languageId,
             binary: binary,
             lspInstance: server,
-            serverCapabilities: capabilities,
-            rootPath: URL(filePath: workspacePath)
+            lspPid: process.processIdentifier,
+            serverCapabilities: initializationResponse.capabilities,
+            rootPath: URL(filePath: workspacePath),
+            logContainer: logContainer
         )
     }
 
@@ -105,16 +122,20 @@ class LanguageServer<DocumentType: LanguageServerDocument> {
     /// - Returns: A new connection to the language server.
     static func makeLocalServerConnection(
         languageId: LanguageIdentifier,
-        executionParams: Process.ExecutionParameters
-    ) throws -> JSONRPCServerConnection {
+        executionParams: Process.ExecutionParameters,
+        logContainer: LanguageServerLogContainer
+    ) throws -> (connection: JSONRPCServerConnection, process: Process) {
         do {
-            let channel = try DataChannel.localProcessChannel(
+            let (channel, process) = try DataChannel.localProcessChannel(
                 parameters: executionParams,
-                terminationHandler: {
+                terminationHandler: { [weak logContainer] in
                     logger.debug("Terminated data channel for \(languageId.rawValue)")
+                    logContainer?.appendLog(
+                        LogMessageParams(type: .error, message: "Data Channel Terminated Unexpectedly")
+                    )
                 }
             )
-            return JSONRPCServerConnection(dataChannel: channel)
+            return (JSONRPCServerConnection(dataChannel: channel), process)
         } catch {
             logger.warning("Failed to initialize data channel for \(languageId.rawValue)")
             throw error
@@ -232,10 +253,12 @@ class LanguageServer<DocumentType: LanguageServerDocument> {
         // swiftlint:enable function_body_length
     }
 
+    // MARK: - Shutdown
+
     /// Shuts down the language server and exits it.
     public func shutdown() async throws {
         self.logger.info("Shutting down language server")
-        try await lspInstance.shutdownAndExit()
+        try await self.lspInstance.shutdownAndExit()
     }
 }
 

@@ -7,6 +7,7 @@
 
 import os.log
 import JSONRPC
+import SwiftUI
 import Foundation
 import LanguageClient
 import LanguageServerProtocol
@@ -114,7 +115,7 @@ final class LSPService: ObservableObject {
     }
 
     /// Holds the active language clients
-    var languageClients: [ClientKey: LanguageServerType] = [:]
+    @Published var languageClients: [ClientKey: LanguageServerType] = [:]
     /// Holds the language server configurations for all the installed language servers
     var languageConfigs: [LanguageIdentifier: LanguageServerBinary] = [:]
     /// Holds all the event listeners for each active language client
@@ -122,6 +123,9 @@ final class LSPService: ObservableObject {
 
     @AppSettings(\.developerSettings.lspBinaries)
     var lspBinaries
+
+    @Environment(\.openWindow)
+    private var openWindow
 
     init() {
         // Load the LSP binaries from the developer menu
@@ -208,7 +212,7 @@ final class LSPService: ObservableObject {
     /// - Parameter document: The code document that was opened.
     func openDocument(_ document: CodeFileDocument) {
         guard let workspace = document.findWorkspace(),
-              let workspacePath = workspace.fileURL?.absoluteURL.path(),
+              let workspacePath = workspace.fileURL?.absolutePath,
               let lspLanguage = document.getLanguage().lspLanguage else {
             return
         }
@@ -221,6 +225,7 @@ final class LSPService: ObservableObject {
                     languageServer = try await self.startServer(for: lspLanguage, workspacePath: workspacePath)
                 }
             } catch {
+                notifyToInstallLanguageServer(language: lspLanguage)
                 // swiftlint:disable:next line_length
                 self.logger.error("Failed to find/start server for language: \(lspLanguage.rawValue), workspace: \(workspacePath, privacy: .private)")
                 return
@@ -300,14 +305,13 @@ final class LSPService: ObservableObject {
 
     /// Goes through all active language servers and attempts to shut them down.
     func stopAllServers() async {
-        await withThrowingTaskGroup(of: Void.self) { group in
+        await withTaskGroup(of: Void.self) { group in
             for (key, server) in languageClients {
                 group.addTask {
                     do {
                         try await server.shutdown()
                     } catch {
-                        self.logger.error("Shutting down \(key.languageId.rawValue): Error \(error)")
-                        throw error
+                        self.logger.warning("Shutting down \(key.languageId.rawValue): Error \(error)")
                     }
                 }
             }
@@ -318,4 +322,46 @@ final class LSPService: ObservableObject {
         }
         eventListeningTasks.removeAll()
     }
+
+    /// Call this when a server is refusing to terminate itself. Sends the `SIGKILL` signal to all lsp processes.
+    func killAllServers() {
+        for (_, server) in languageClients {
+            kill(server.pid, SIGKILL)
+        }
+    }
+}
+
+extension LSPService {
+    private func notifyToInstallLanguageServer(language lspLanguage: LanguageIdentifier) {
+        // TODO: Re-Enable when this is more fleshed out (don't send duplicate notifications in a session)
+        return
+        let lspLanguageTitle = lspLanguage.rawValue.capitalized
+        let notificationTitle = "Install \(lspLanguageTitle) Language Server"
+        // Make sure the user doesn't have the same existing notification
+        guard !NotificationManager.shared.notifications.contains(where: { $0.title == notificationTitle }) else {
+            return
+        }
+
+        NotificationManager.shared.post(
+            iconSymbol: "arrow.down.circle",
+            iconColor: .clear,
+            title: notificationTitle,
+            description: "Install the \(lspLanguageTitle) language server to enable code intelligence features.",
+            actionButtonTitle: "Install"
+        ) { [weak self] in
+            // TODO: Warning:
+            // Accessing Environment<OpenWindowAction>'s value outside of being installed on a View.
+            // This will always read the default value and will not update
+            self?.openWindow(sceneID: .settings)
+        }
+    }
+}
+
+// MARK: - Errors
+
+enum ServerManagerError: Error {
+    case serverNotFound
+    case serverStartFailed
+    case serverStopFailed
+    case languageClientNotFound
 }

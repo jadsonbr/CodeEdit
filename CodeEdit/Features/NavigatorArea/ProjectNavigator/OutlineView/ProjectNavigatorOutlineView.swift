@@ -59,8 +59,8 @@ struct ProjectNavigatorOutlineView: NSViewControllerRepresentable {
                 })
                 .store(in: &cancellables)
             workspace.editorManager?.tabBarTabIdSubject
-                .sink { [weak self] itemID in
-                    self?.controller?.updateSelection(itemID: itemID)
+                .sink { [weak self] editorInstance in
+                    self?.controller?.updateSelection(itemID: editorInstance?.file.id)
                 }
                 .store(in: &cancellables)
             workspace.$navigatorFilter
@@ -85,8 +85,16 @@ struct ProjectNavigatorOutlineView: NSViewControllerRepresentable {
             guard let outlineView = controller?.outlineView else { return }
             let selectedRows = outlineView.selectedRowIndexes.compactMap({ outlineView.item(atRow: $0) })
 
-            for item in updatedItems {
-                outlineView.reloadItem(item, reloadChildren: true)
+            // If some text view inside the outline view is first responder right now, push the update off
+            // until editing is finished using the `shouldReloadAfterDoneEditing` flag.
+            if outlineView.window?.firstResponder !== outlineView
+                && outlineView.window?.firstResponder is NSTextView
+                && (outlineView.window?.firstResponder as? NSView)?.isDescendant(of: outlineView) == true {
+                controller?.shouldReloadAfterDoneEditing = true
+            } else {
+                for item in updatedItems {
+                    outlineView.reloadItem(item, reloadChildren: true)
+                }
             }
 
             // Restore selected items where the files still exist.

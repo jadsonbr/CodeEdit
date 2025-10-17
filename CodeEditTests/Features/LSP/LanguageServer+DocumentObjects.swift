@@ -49,8 +49,10 @@ final class LanguageServerDocumentObjectsTests: XCTestCase {
                 server: BufferingServerConnection(),
                 initializeParamsProvider: LanguageServerType.getInitParams(workspacePath: "/")
             ),
+            lspPid: -1,
             serverCapabilities: capabilities,
-            rootPath: URL(fileURLWithPath: "")
+            rootPath: URL(fileURLWithPath: ""),
+            logContainer: LanguageServerLogContainer(language: .swift)
         )
         _ = try await server.lspInstance.initializeIfNeeded()
         document = MockDocumentType()
@@ -74,7 +76,7 @@ final class LanguageServerDocumentObjectsTests: XCTestCase {
         XCTAssertNotNil(server.openFiles.document(for: languageServerURI))
 
         try await server.closeDocument(languageServerURI)
-        XCTAssertNil(document.languageServerObjects.highlightProvider)
-        XCTAssertNil(document.languageServerObjects.textCoordinator)
+        XCTAssertNil(document.languageServerObjects.highlightProvider.languageServer)
+        XCTAssertNil(document.languageServerObjects.textCoordinator.languageServer)
     }
 }
